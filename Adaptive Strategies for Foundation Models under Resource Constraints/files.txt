@@ -1,0 +1,243 @@
+Project overview
+
+Goal: compare and enable three adaptation strategies for LLMs in constrained environments:
+
+Fine-tuning (full or parameter-efficient via LoRA/PEFT),
+
+Prompting (zero/few-shot),
+
+RAG (retrieval-augmented generation using a vector store).
+
+
+Files — what they do (file-by-file)
+utils.py
+
+Purpose:
+
+Small helpers used by other scripts.
+
+Functions:
+
+measure_latency(func, *args, n_runs=20, **kwargs): warmups then measures average runtime for n_runs.
+
+gpu_memory_used(device=0): returns peak GPU memory allocated (GB) on device via torch.cuda.max_memory_allocated(). Returns 0.0 if CUDA not available.
+
+load_tokenizer(model_name): wrapper for AutoTokenizer.from_pretrained.
+
+Why use it:
+
+Centralizes simple instrumentation for latency and memory measurements across scripts.
+
+Caveat:
+
+gpu_memory_used reports max allocated by current torch process, not total GPU usage by system. Use nvidia-smi for system-level measurement.
+
+finetune.py
+
+Purpose:
+
+Supervised fine-tuning (Hugging Face Trainer) for classification tasks (works with GLUE-style datasets).
+
+Key points:
+
+Default model: distilbert-base-uncased. You can change --model.
+
+Supports GLUE splits (--dataset glue --subset sst2), but will accept other datasets supported by datasets.
+
+Uses TrainingArguments for epoch count, batch sizes, and optional --fp16.
+
+compute_metrics returns accuracy; you can replace/extend.
+
+How to run (example):
+
+python finetune.py --model distilbert-base-uncased --dataset glue --subset sst2 --epochs 3 --batch_size 16 --fp16
+
+
+Important implementation notes:
+
+Tokenization handles sentence or sentence1/sentence2 automatically.
+
+For dataset mapping I used batched=False to reduce accidental memory use — for large datasets use batched=True and remove_columns to optimize.
+
+Trainer will save model checkpoints and evaluation logs in --output_dir.
+
+Pitfalls & tips:
+
+GPU memory: big models or large batch sizes will OOM. Use --fp16 or reduce batch size.
+
+For large models, consider PEFT/LoRA instead of full fine-tuning.
+
+peft_finetune.py
+
+Purpose:
+
+Parameter-efficient fine-tuning using LoRA via peft.
+
+Key points:
+
+Creates LoraConfig and wraps a classification model with get_peft_model(...).
+
+Optionally calls prepare_model_for_kbit_training for 8-bit-friendly prep (requires bitsandbytes).
+
+Uses Trainer similar to finetune.py.
+
+How to run (example):
+
+python peft_finetune.py --model distilbert-base-uncased --dataset glue --subset sst2 --epochs 3 --batch_size 16
+
+
+Why use LoRA:
+
+LoRA trains only a small number of extra parameters (low-rank matrices) — drastically reduced memory and compute requirement.
+
+Important details:
+
+target_modules=['q','v'] is a common choice for transformer-style models (attn q/v projections). For other architectures you may need other module names.
+
+model.print_trainable_parameters() prints which params are trainable — useful sanity check.
+
+Caveats:
+
+peft must be installed (pip install peft). If using 8-bit tuning, install bitsandbytes and ensure compatibility with your CUDA/PyTorch version.
+
+prompt_eval.py
+
+Purpose:
+
+Evaluate prompting (zero/few-shot) on classification tasks by generating textual answers with templates.
+
+Key points:
+
+Default model google/flan-t5-base (seq2seq) — can change to smaller model for lower latency (flan-t5-small).
+
+Uses a simple templated prompt and the model’s .generate(...).
+
+Measures latency (using measure_latency).
+
+How to run (example):
+
+python prompt_eval.py --model google/flan-t5-base --dataset glue --subset sst2 --n_examples 20
+
+
+Notes:
+
+Prompt engineering matters a lot. The short example returns “POSITIVE” or “NEGATIVE”; post-processing may be needed to map model outputs to labels.
+
+For causal LM (GPT-style), you would use a different model class and possibly different tokenization / generation approach.
+
+Performance tips:
+
+Use smaller models for low-latency budgets (e.g., flan-t5-small, distilbart, etc.).
+
+For many requests, batch prompts to amortize tokenization/generation overhead.
+
+rag_eval.py (Extended)
+
+Purpose:
+
+Small RAG pipeline using sentence-transformers for embedding, faiss for vector index, and a generative model for answer synthesis.
+
+Features:
+
+Build FAISS index from docs (list of text strings).
+
+--interactive: interactive loop to query and to add new docs dynamically.
+
+Measures latency and (torch) GPU memory per query.
+
+Returns retrieved docs + distances (L2) for inspection.
+
+How it works:
+
+Embed docs with SentenceTransformer.
+
+Build faiss.IndexFlatL2 with the embeddings.
+
+For a query: embed query → index.search → get top-k doc texts → craft prompt with context → generate answer with generator model.
+
+How to run:
+
+python rag_eval.py --embed_model all-MiniLM-L6-v2 --gen_model google/flan-t5-base --k 4
+# interactive:
+python rag_eval.py --interactive
+
+
+Important notes:
+
+FAISS index is in-memory; for larger corpora use faiss.IndexIVFFlat with training and sharding or a managed vector DB (Pinecone/Weaviate).
+
+all-MiniLM-L6-v2 is small and fast; use larger embedder for more precise retrievals.
+
+Retrieval quality depends on embedding model + document chunking strategy.
+
+Document addition (--interactive):
+
+Type add to add a new doc; it encodes and index.add()s the vector (appends in-place).
+
+Caveats:
+
+IndexFlatL2 does exhaustive search — works for small corpora. For thousands+ docs you must switch to an IVF/annoy/HNSW style index or use a vector DB.
+
+Ensure tokenizer/device placement for generation; the script moves generation inputs to --device.
+
+quantize_and_parallel.py
+
+Purpose:
+
+Demo how to load models in FP16 or 8-bit (via bitsandbytes) and allow a simple device_map='auto' for splitting model across multiple GPUs.
+
+How to run:
+
+python quantize_and_parallel.py --model google/flan-t5-base --fp16
+python quantize_and_parallel.py --model google/flan-t5-base --int8
+
+
+Important implementation detail:
+
+AutoModelForSeq2SeqLM.from_pretrained(..., load_in_8bit=True) requires transformers built with bitsandbytes support and bitsandbytes installed.
+
+device_map='auto' uses transformers’s device-placement helpers (works best with accelerate or when using transformers >= versions that support device_map).
+
+Caveats:
+
+8-bit loading has constraints (layers that are supported, plugin versions). Test on your environment.
+
+For multi-GPU training/inference, prefer accelerate or DeepSpeed for robust behavior.
+
+adaptive_selector.py
+
+Purpose:
+
+Small rule-based policy that suggests whether to use prompting, fine-tuning, or RAG given:
+
+memory_gb, latency_ms, data_size, knowledge_heavy, required_accuracy.
+
+How it’s used:
+
+Quick heuristic to pick a strategy before running experiments.
+
+Note:
+
+This is a simple rule system — you can replace it later with a learned meta-controller that uses empirical experiment logs to pick strategies.
+
+plot_results.py
+
+Purpose:
+
+Read a CSV of experiments and save two PNGs: accuracy bar chart and latency vs accuracy scatter.
+
+How to run:
+
+python plot_results.py  # expects 'sample_results.csv' in working dir or change CSV path in script
+
+
+
+pip install torch transformers datasets sentence-transformers faiss-cpu peft accelerate scikit-learn tqdm psutil matplotlib pandas
+# bitsandbytes (optional)
+pip install bitsandbytes
+
+
+
+Plotting guidelines:
+
+Uses matplotlib defaults (the project restriction stated "do not set custom colors" unless asked). You can style charts later.

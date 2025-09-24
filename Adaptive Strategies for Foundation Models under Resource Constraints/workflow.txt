@@ -1,0 +1,70 @@
+How to run common workflows — quick commands
+1) Small fine-tune on SST-2 (single GPU)
+python finetune.py --model distilbert-base-uncased --dataset glue --subset sst2 --epochs 3 --batch_size 16 --fp16
+
+2) LoRA fine-tune (PEFT)
+python peft_finetune.py --model distilbert-base-uncased --dataset glue --subset sst2 --epochs 3 --batch_size 32
+
+3) Prompt baseline eval (few-shot/zero-shot)
+python prompt_eval.py --model google/flan-t5-small --dataset glue --subset sst2 --n_examples 50
+
+4) RAG query & interactive add
+python rag_eval.py --embed_model all-MiniLM-L6-v2 --gen_model google/flan-t5-base --k 4 --interactive
+
+5) Load model in FP16 or 8-bit, run a quick generate
+python quantize_and_parallel.py --model google/flan-t5-base --fp16
+python quantize_and_parallel.py --model google/flan-t5-base --int8
+
+6) Plot sample results
+python plot_results.py
+
+Evaluation, logging and experiment tracking
+
+Keep consistent CSV logs for each experiment with fields like:
+
+experiment_id, strategy, model, quantization, dataset, accuracy, f1, latency_s, mem_gb, gpu_hours, notes
+
+
+Tips:
+
+Measure latency as avg time per sample (for batching, report per-sample latency at given batch sizes).
+
+Measure memory using both torch.cuda.max_memory_allocated() (process-level) and nvidia-smi for system-level consumption during runs.
+
+Compute GPU hours by logging runtime * number of GPUs used.
+
+For robust experiments, use an experiment tracker (Weights & Biases, MLflow, or even simple CSVs). accelerate integrates well for multi-GPU.
+
+Resource & performance tips (practical)
+
+If you have <12GB GPU memory:
+
+Prefer LoRA / PEFT over full fine-tuning.
+
+Use fp16 and/or load_in_8bit=True with bitsandbytes (if compatible).
+
+Use smaller generation models (e.g., flan-t5-small, t5-small) for inference.
+
+If you have multi-GPU:
+
+Use accelerate or deepspeed for training. device_map='auto' helps inference splitting.
+
+For RAG on large corpora:
+
+Chunk long documents (e.g., 200–500 tokens per chunk) before embedding.
+
+Use IVF/HNSW indices, or a managed vector DB to scale beyond in-memory FAISS.
+
+Prompting: few-shot prompts are sensitive — test multiple templates and demonstration examples.
+
+Common pitfalls & debugging
+
+OOM errors: reduce batch size, enable --fp16, or use LoRA.
+
+bitsandbytes errors: mismatch between bitsandbytes, PyTorch, CUDA versions common. Use CPU fallback or remove --int8.
+
+Slow inference: check device placement (inputs must be on same device as model), batch prompts, or use smaller models.
+
+Poor RAG retrievals: try different embedder (larger SBERT models) and more fine-grained chunking.
+
+Label mismatch in datasets: mapping label names and indices can differ — inspect dataset features to ensure correct num_labels.

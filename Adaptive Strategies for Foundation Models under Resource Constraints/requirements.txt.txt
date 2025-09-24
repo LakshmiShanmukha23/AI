@@ -1,0 +1,13 @@
+transformers>=4.30.0
+datasets
+sentence-transformers
+faiss-cpu
+peft
+bitsandbytes         # if you plan to do 8-bit training/inference
+accelerate           # for multi-GPU training (recommended)
+scikit-learn
+torch>=1.12
+tqdm
+psutil
+pandas
+matplotlib
